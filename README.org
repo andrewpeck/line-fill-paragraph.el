@@ -31,7 +31,7 @@ Before:
 The capybara is the largest living rodent. It is native to South America. Capybaras are highly social animals.
 #+end_example
 
-After ~M-x line-fill~:
+After ~M-x line-fill-paragraph~:
 
 #+begin_example
 The capybara is the largest living rodent.
@@ -39,12 +39,37 @@ It is native to South America.
 Capybaras are highly social animals.
 #+end_example
 
+** Sentence boundaries
+
+Sentences are located with ~forward-sentence~, so ~sentence-end-double-space~
+decides what counts as a sentence end.  With its default value of ~t~, Emacs
+only treats a period as ending a sentence when it is followed by two spaces, so
+single-spaced prose is deliberately left alone.  Set it to ~nil~ if you write
+with single spaces:
+
+#+begin_src emacs-lisp
+(setq sentence-end-double-space nil)
+#+end_src
+
 ** Abbreviation handling
 
 The package will not insert a line break after abbreviations such as ~e.g.~,
-~i.e.~, ~n.b.~, ~c.f.~, or single-letter initials.  It also avoids breaking
-after ~!~ or ~?~ that appear inside parentheses (e.g. "faster (or more!) than
+~i.e.~, ~n.b.~, ~c.f.~, common titles like ~Mr.~ and ~Dr.~, or single-letter
+initials.  Multi-initial forms such as ~U.S.~ are handled too, while acronyms
+such as ~NASA.~ still end a sentence.  It also avoids breaking after ~!~ or ~?~
+that appear inside quotes or parentheses (e.g. "faster (or more!) than
 expected").
 
-The list of non-breaking abbreviations is controlled by the variable
-~line-fill-non-separators~.
+The list of non-breaking abbreviations is the user option
+~line-fill-non-separators~, which you can extend:
+
+#+begin_src emacs-lisp
+(add-to-list 'line-fill-non-separators "Sec.")
+#+end_src
+
+** Paragraphs that are left alone
+
+To re-flow a paragraph, ~line-fill-paragraph~ first joins it onto a single line.
+That is destructive, so it is skipped unless the paragraph both looks like prose
+and would actually gain at least one line break.  This keeps ~line-fill-buffer~
+from mangling markup such as LaTeX preambles and ~tabular~ environments.

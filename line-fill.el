@@ -25,32 +25,111 @@
 
 ;;; Commentary:
 ;;
-;; Provides `line-fill' and `line-fill-buffer', which reformat prose so that
-;; each sentence occupies its own line. Useful e.g. in LaTeX documents or other
-;; version controlled prose, since a change to one sentence produces a minimal
-;; diff rather than reflowing an entire paragraph.
+;; Provides `line-fill-paragraph' and `line-fill-buffer', which reformat prose
+;; so that each sentence occupies its own line.  Useful e.g. in LaTeX documents
+;; or other version controlled prose, since a change to one sentence produces a
+;; minimal diff rather than reflowing an entire paragraph.
+;;
+;; Note that sentence boundaries are found with `forward-sentence', so the
+;; value of `sentence-end-double-space' decides what counts as a sentence.
+;; With its default value of t, single-spaced prose is deliberately left alone.
 ;;
 ;;; Code:
 
-(defvar line-fill-non-separators
+(defgroup line-fill nil
+  "Fill paragraphs with one sentence per line."
+  :group 'fill
+  :prefix "line-fill-")
+
+(defcustom line-fill-non-separators
   (append
-   (list "n.b." "i.e." "e.g." "c.f." "viz." "eg." "ie.")
+   (list "n.b." "i.e." "e.g." "c.f." "viz." "eg." "ie."
+         "Mr." "Mrs." "Ms." "Dr." "Prof." "vs." "etc." "cf." "al."
+         "St." "No." "Vol." "Fig." "Eq." "Jr." "Sr." "Inc." "Ltd.")
    ;; single letter initials such as A. B. C.
-   (mapcar (lambda (x) (concat (upcase (char-to-string x)) ".")) (number-sequence ?a ?z))))
+   (mapcar (lambda (x) (concat (upcase (char-to-string x)) ".")) (number-sequence ?a ?z)))
+  "Words ending in a period that do not end a sentence.
+
+A line break is never inserted after one of these, so abbreviations
+such as \"e.g.\" and initials such as \"A.\" keep the text that
+follows them on the same line."
+  :type '(repeat string)
+  :group 'line-fill)
+
+(defconst line-fill--closing-punct-regexp
+  "[!?][\"')\u201d\u2019\u00bb]+\\'"
+  "Regexp matching sentence punctuation closed by a quote or paren.
+
+Used to avoid breaking after constructs like \"(or more!)\" or
+\"\\\"Stop!\\\"\", which `forward-sentence' treats as sentence ends.")
 
 (defsubst line-fill--abbrev-regexp ()
-  "Generate a regular expression for non-separator strings.
+  "Generate a regular expression matching a token that ends in an abbreviation.
 
-Matches one or more spaces followed by any of the specified
-non-separator strings.
-
-Returns a concatenated regular expression string for use in line
-filling."
-  (concat "\\s-+\\("
+The abbreviation must finish the token and be preceded either by the
+start of the token or by a non-alphanumeric character.  This matches
+\"e.g.\", \"U.S.\" and \"\\author{A.\" while leaving acronyms such as
+\"NASA.\" alone, since there the final \"A.\" follows a letter."
+  (concat "\\(?:\\`\\|[^[:alnum:]]\\)\\(?:"
           (string-join
            (mapcar #'regexp-quote line-fill-non-separators)
            "\\|")
-          "\\)"))
+          "\\)\\'"))
+
+(defsubst line-fill--token-at-point ()
+  "Return the whitespace-delimited token ending at point."
+  (buffer-substring-no-properties
+   (save-excursion (skip-chars-backward "^ \t\n") (point))
+   (point)))
+
+(defun line-fill--sentence-limit ()
+  "Return a marker at the start of the current paragraph's last sentence.
+
+Sentence breaks are only inserted before this position, so that no
+break is added after the paragraph's final sentence."
+  (save-excursion
+    (forward-paragraph 1)
+    (backward-sentence)
+    (point-marker)))
+
+(defun line-fill--scan-breaks (limit fn)
+  "Walk sentences forward from point to LIMIT, calling FN at each line break.
+
+FN is called with point at a position where a line break belongs; it
+may modify the buffer.  When FN is nil nothing is modified, which makes
+this a dry run.  Return the number of break positions found.
+
+Sentence ends whose preceding token is in `line-fill-non-separators',
+or which match `line-fill--closing-punct-regexp', are not counted."
+  (let ((abbrev-regexp (line-fill--abbrev-regexp))
+        (count 0)
+        (prev -1))
+    (catch 'line-fill-done
+      (while t
+        ;; advance one sentence; exit cleanly at end of buffer
+        (condition-case nil
+            (forward-sentence)
+          (end-of-buffer (throw 'line-fill-done nil)))
+        ;; stop past the final sentence, and defensively if `forward-sentence'
+        ;; ever stops making progress
+        (when (or (> (point) (marker-position limit))
+                  (<= (point) prev))
+          (throw 'line-fill-done nil))
+        (let ((token (line-fill--token-at-point)))
+          (unless (or (string-match abbrev-regexp token)
+                      (string-match line-fill--closing-punct-regexp token))
+            (setq count (1+ count))
+            (when fn (funcall fn))))
+        (setq prev (point))))
+    count))
+
+(defun line-fill--break ()
+  "Replace the spaces before point with a line break.
+Uses `default-indent-new-line' so that a comment prefix or
+`fill-prefix' is carried onto the new line."
+  (just-one-space)              ;; leaves only one space, point is after it
+  (delete-char -1)              ;; delete the space
+  (default-indent-new-line))    ;; and break the line, keeping any prefix
 
 ;;;###autoload
 (defun line-fill-buffer (&optional P)
@@ -73,56 +152,37 @@ Otherwise split the current paragraph into one sentence per line."
   (interactive "P")
   ;; ordinary fill paragraph when prefix arg is set
   (if P (fill-paragraph P)
-    (let ((abbrev-regexp (line-fill--abbrev-regexp))
-          (paren-end-regexp "[!?][\"')]+\\'"))
-      (save-excursion
-        (let* ((fill-column 12345678) ;; relies on dynamic binding
-               (para-text (save-excursion
-                            (let ((end (progn (forward-paragraph 1) (point))))
-                              (backward-paragraph 1)
-                              (buffer-substring-no-properties (point) end)))))
-          ;; skip paragraphs with no sentence-ending punctuation; fill-paragraph
-          ;; would join their lines with no way to re-split them
-          (when (let ((case-fold-search nil))
-                  (string-match "[a-z0-9)\"'][.!?]\\s-" para-text))
-            (fill-paragraph) ;; this will not work correctly if the paragraph is
-            ;; longer than 12345678 characters (in which case the
-            ;; file must be at least 12MB long. This is unlikely.)
-            (let ((end (save-excursion
-                         (forward-paragraph 1)
-                         (backward-sentence)
-                         (point-marker)))) ;; remember where to stop
+    (save-excursion
+      ;; `fill-paragraph' is used to normalize the paragraph onto a single line
+      ;; before it is re-split, so that sentences already spread over several
+      ;; lines are rejoined first.  This relies on dynamic binding.
+      (let* ((fill-column most-positive-fixnum)
+             (para-text (save-excursion
+                          (let ((end (progn (forward-paragraph 1) (point))))
+                            (backward-paragraph 1)
+                            (buffer-substring-no-properties (point) end)))))
+        ;; Joining the paragraph is destructive: if nothing is split back out
+        ;; the original line structure is lost for good.  So two guards run
+        ;; before `fill-paragraph' is allowed to touch anything.
+        ;;
+        ;; First, the paragraph has to look like prose at all.  This keeps
+        ;; `line-fill-buffer' away from things like LaTeX preambles and tabular
+        ;; environments, where a period is preceded by markup rather than text.
+        (when (string-match "[[:alnum:])\"'][.!?]\\s-" para-text)
+          ;; Second, dry-run the scan and require at least one real break.  A
+          ;; paragraph whose every sentence end is an abbreviation would
+          ;; otherwise be joined and never split again.  Filling only rewrites
+          ;; whitespace, so the sentences seen here are the ones seen below.
+          (when (> (save-excursion
+                     (let ((limit (line-fill--sentence-limit)))
+                       (forward-paragraph 1)
+                       (backward-paragraph 1)
+                       (line-fill--scan-breaks limit nil)))
+                   0)
+            (fill-paragraph)
+            (let ((limit (line-fill--sentence-limit)))
               (beginning-of-line)
-              (catch 'line-fill-done
-                (while t
-                  ;; advance one sentence; exit cleanly at end of buffer or past end
-                  (condition-case nil
-                      (forward-sentence)
-                    (end-of-buffer (throw 'line-fill-done nil)))
-                  (when (> (point) (marker-position end))
-                    (throw 'line-fill-done nil))
-                  ;; skip over abbreviations (e.g., i.e.) and punct inside parens (or more!)
-                  (let ((skipped nil)
-                        (s (point))
-                        (e nil))
-                    (save-excursion
-                      (when (re-search-backward " " nil t)
-                        (setq e (point))))
-                    (when e
-                      (let ((last-word (buffer-substring-no-properties s e)))
-                        (when (or (string-match abbrev-regexp last-word)
-                                  (string-match paren-end-regexp last-word))
-                          (setq skipped t)
-                          (condition-case nil
-                              (forward-sentence)
-                            (end-of-buffer (throw 'line-fill-done nil)))
-                          (when (> (point) (marker-position end))
-                            (throw 'line-fill-done nil)))))
-                    (unless skipped
-                      (just-one-space) ;; leaves only one space, point is after it
-                      (delete-char -1) ;; delete the space
-                      (newline)        ;; and insert a newline
-                      (indent-region (line-beginning-position) (line-end-position)))))))))))))
+              (line-fill--scan-breaks limit #'line-fill--break))))))))
 
 (provide 'line-fill)
 ;;; line-fill.el ends here
