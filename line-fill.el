@@ -82,6 +82,13 @@ start of the token or by a non-alphanumeric character.  This matches
    (save-excursion (skip-chars-backward "^ \t\n") (point))
    (point)))
 
+(defun line-fill--paragraph-bounds ()
+  "Return the bounds of the paragraph at point as a cons cell (BEG . END)."
+  (save-excursion
+    (let ((end (progn (forward-paragraph 1) (point))))
+      (backward-paragraph 1)
+      (cons (point) end))))
+
 (defun line-fill--sentence-limit ()
   "Return a marker at the start of the current paragraph's last sentence.
 
@@ -157,10 +164,10 @@ Otherwise split the current paragraph into one sentence per line."
       ;; before it is re-split, so that sentences already spread over several
       ;; lines are rejoined first.  This relies on dynamic binding.
       (let* ((fill-column most-positive-fixnum)
-             (para-text (save-excursion
-                          (let ((end (progn (forward-paragraph 1) (point))))
-                            (backward-paragraph 1)
-                            (buffer-substring-no-properties (point) end)))))
+             (bounds (line-fill--paragraph-bounds))
+             (beg (car bounds))
+             (end (cdr bounds))
+             (para-text (buffer-substring-no-properties beg end)))
         ;; Joining the paragraph is destructive: if nothing is split back out
         ;; the original line structure is lost for good.  So two guards run
         ;; before `fill-paragraph' is allowed to touch anything.
@@ -174,10 +181,8 @@ Otherwise split the current paragraph into one sentence per line."
           ;; otherwise be joined and never split again.  Filling only rewrites
           ;; whitespace, so the sentences seen here are the ones seen below.
           (when (> (save-excursion
-                     (let ((limit (line-fill--sentence-limit)))
-                       (forward-paragraph 1)
-                       (backward-paragraph 1)
-                       (line-fill--scan-breaks limit nil)))
+                     (goto-char beg)
+                     (line-fill--scan-breaks (line-fill--sentence-limit) nil))
                    0)
             (fill-paragraph)
             (let ((limit (line-fill--sentence-limit)))
